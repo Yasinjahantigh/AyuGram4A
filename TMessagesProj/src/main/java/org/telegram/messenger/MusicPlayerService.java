@@ -63,6 +63,7 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
     private Bitmap albumArtPlaceholder;
     private int notificationMessageID;
     private ImageReceiver imageReceiver;
+    private boolean foregroundServiceIsStarted;
 
     private String loadingFilePath;
 
@@ -213,8 +214,41 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
         AudioInfo audioInfo = MediaController.getInstance().getAudioInfo();
 
         Intent intent = new Intent(ApplicationLoader.applicationContext, LaunchActivity.class);
-        intent.setAction("com.tmessages.openplayer");
-        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        if (messageObject.isMusic()) {
+            intent.setAction("com.tmessages.openplayer");
+            intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        } else if (messageObject.isVoice() || messageObject.isRoundVideo()) {
+            intent.setAction(Intent.ACTION_VIEW);
+            long fromId = 0;
+            org.telegram.tgnet.TLRPC.Message owner = messageObject.messageOwner;
+            if (owner.peer_id instanceof org.telegram.tgnet.TLRPC.TL_peerUser) {
+                fromId = owner.peer_id.user_id;
+            } else if (owner.peer_id instanceof org.telegram.tgnet.TLRPC.TL_peerChat) {
+                fromId = owner.peer_id.chat_id;
+            } else if (owner.peer_id instanceof org.telegram.tgnet.TLRPC.TL_peerChannel) {
+                fromId = owner.peer_id.channel_id;
+            }
+            if (fromId != 0) {
+                if (owner.peer_id instanceof org.telegram.tgnet.TLRPC.TL_peerUser) {
+                    intent.setData(android.net.Uri.parse("tg://openmessage?user_id=" + fromId + "&message_id=" + messageObject.getId()));
+                } else {
+                    intent.setData(android.net.Uri.parse("tg://openmessage?chat_id=" + fromId + "&message_id=" + messageObject.getId()));
+                }
+            }
+            long senderId = messageObject.getSenderId();
+            if (messageObject.isFromUser()) {
+                org.telegram.tgnet.TLRPC.User user = MessagesController.getInstance(UserConfig.selectedAccount).getUser(senderId);
+                if (user != null) {
+                    songName = UserObject.getUserName(user);
+                }
+            } else {
+                org.telegram.tgnet.TLRPC.Chat chat = MessagesController.getInstance(UserConfig.selectedAccount).getChat(-senderId);
+                if (chat != null) {
+                    songName = chat.title;
+                }
+            }
+            authorName = messageObject.isVoice() ? LocaleController.getString("AttachAudio") : LocaleController.getString("AttachRound");
+        }
         PendingIntent contentIntent = PendingIntent.getActivity(ApplicationLoader.applicationContext, 0, intent, fixIntentFlags(PendingIntent.FLAG_MUTABLE));
 
         Notification notification;
@@ -223,20 +257,25 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
         String artworkUrlBig = messageObject.getArtworkUrl(false);
         long duration = messageObject.getDuration() * 1000;
 
-        Bitmap albumArt = audioInfo != null ? audioInfo.getSmallCover() : null;
-        Bitmap fullAlbumArt = audioInfo != null ? audioInfo.getCover() : null;
+        Bitmap albumArt = null;
+        Bitmap fullAlbumArt = null;
 
-        loadingFilePath = null;
-        imageReceiver.setImageBitmap((BitmapDrawable) null);
-        if (albumArt == null && !TextUtils.isEmpty(artworkUrl)) {
-            fullAlbumArt = loadArtworkFromUrl(artworkUrlBig, true, !forBitmap);
-            if (fullAlbumArt == null) {
-                fullAlbumArt = albumArt = loadArtworkFromUrl(artworkUrl, false, !forBitmap);
+        if (messageObject.isMusic()) {
+            albumArt = audioInfo != null ? audioInfo.getSmallCover() : null;
+            fullAlbumArt = audioInfo != null ? audioInfo.getCover() : null;
+
+            loadingFilePath = null;
+            imageReceiver.setImageBitmap((BitmapDrawable) null);
+            if (albumArt == null && !TextUtils.isEmpty(artworkUrl)) {
+                fullAlbumArt = loadArtworkFromUrl(artworkUrlBig, true, !forBitmap);
+                if (fullAlbumArt == null) {
+                    fullAlbumArt = albumArt = loadArtworkFromUrl(artworkUrl, false, !forBitmap);
+                } else {
+                    albumArt = loadArtworkFromUrl(artworkUrlBig, false, !forBitmap);
+                }
             } else {
-                albumArt = loadArtworkFromUrl(artworkUrlBig, false, !forBitmap);
+                loadingFilePath = FileLoader.getInstance(UserConfig.selectedAccount).getPathToAttach(messageObject.getDocument()).getAbsolutePath();
             }
-        } else {
-            loadingFilePath = FileLoader.getInstance(UserConfig.selectedAccount).getPathToAttach(messageObject.getDocument()).getAbsolutePath();
         }
 
         boolean isPlaying = !MediaController.getInstance().isMessagePaused();
@@ -307,7 +346,15 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
 
         notification = bldr.build();
 
-        if (isPlaying) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!foregroundServiceIsStarted) {
+                foregroundServiceIsStarted = true;
+                startForeground(ID_NOTIFICATION, notification);
+            } else {
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                nm.notify(ID_NOTIFICATION, notification);
+            }
+        } else if (isPlaying) {
             startForeground(ID_NOTIFICATION, notification);
         } else {
             stopForeground(false);
@@ -404,6 +451,7 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
     public void onDestroy() {
         unregisterReceiver(headsetPlugReceiver);
         super.onDestroy();
+        stopForeground(true);
         if (remoteControlClient != null) {
             RemoteControlClient.MetadataEditor metadataEditor = remoteControlClient.editMetadata(true);
             metadataEditor.clear();

@@ -556,6 +556,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
     public boolean isSilent = false;
     private boolean isPaused = false;
+    private boolean wasPlayingAudioBeforePause = false;
     private VideoPlayer audioPlayer = null;
     private VideoPlayer emojiSoundPlayer = null;
     private int emojiSoundPlayerNum = 0;
@@ -1464,8 +1465,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
         } else if (id == NotificationCenter.playerDidStartPlaying) {
             VideoPlayer p = (VideoPlayer) args[0];
-            if (!MediaController.getInstance().isCurrentPlayer(p)) {
-                MediaController.getInstance().pauseMessage(MediaController.getInstance().getPlayingMessageObject());
+            if (!isCurrentPlayer(p)) {
+                MessageObject message = getPlayingMessageObject();
+                if (message != null && isPlayingMessage(message) && !isMessagePaused() && (message.isMusic() || message.isVoice())) {
+                    wasPlayingAudioBeforePause = true;
+                }
+                pauseMessage(message);
             }
         }
     }
@@ -3037,6 +3042,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 } catch (Throwable e) {
                     FileLog.e(e);
                 }
+            } else if (playingMessageObject.isVoice() || playingMessageObject.isRoundVideo()) {
+                Intent intent = new Intent(ApplicationLoader.applicationContext, MusicPlayerService.class);
+                try {
+                    ApplicationLoader.applicationContext.startService(intent);
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
             } else {
                 Intent intent = new Intent(ApplicationLoader.applicationContext, MusicPlayerService.class);
                 ApplicationLoader.applicationContext.stopService(intent);
@@ -3421,7 +3433,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
         }
 
-        if (playingMessageObject != null && playingMessageObject.isMusic()) {
+        if (playingMessageObject != null && (playingMessageObject.isMusic() || playingMessageObject.isVoice() || playingMessageObject.isRoundVideo())) {
             Intent intent = new Intent(ApplicationLoader.applicationContext, MusicPlayerService.class);
             try {
                 /*if (Build.VERSION.SDK_INT >= 26) {
@@ -3484,6 +3496,14 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
     public boolean isCurrentPlayer(VideoPlayer player) {
         return videoPlayer == player || audioPlayer == player;
+    }
+
+    public void tryResumePausedAudio() {
+        MessageObject message = getPlayingMessageObject();
+        if (message != null && isMessagePaused() && wasPlayingAudioBeforePause && (message.isVoice() || message.isMusic())) {
+            playMessage(message);
+        }
+        wasPlayingAudioBeforePause = false;
     }
 
     public boolean pauseMessage(MessageObject messageObject) {
